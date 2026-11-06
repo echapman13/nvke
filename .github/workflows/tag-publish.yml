@@ -42,16 +42,15 @@ jobs:
     permissions:
       contents: read
 
-  # Builds nvkectl once for the three cli publishers below. Only cli/v* tags
-  # and bare vX.Y.Z and vX.Y.Z-beta.N tags ship nvkectl; every other tag is published by
-  # its own workflow (see the publish job's routing table).
+  # Builds nvkectl once for the three cli publishers below. vX.Y.Z and
+  # vX.Y.Z-beta.N tags ship nvkectl; a vX.Y.Z-rc.N publishes nothing here.
   build-cli:
     name: Build nvkectl
     outputs:
-      # The three cli publishers below consume these, so a cli/v* tag produces
-      # one build rather than four.
+      # The three cli publishers below consume these, so a tag produces one
+      # build rather than four.
       dist_artifact: cli-dist-${{ github.run_id }}-${{ github.run_attempt }}
-    if: ${{ startsWith(github.ref_name, 'cli/') || (!contains(github.ref_name, '/') && !contains(github.ref_name, '-rc.')) }}
+    if: ${{ !contains(github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [license-checks]
@@ -65,11 +64,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The cli/v* pattern at the top of this file cannot be strict, because a
-      # glob cannot spell "vX.Y.Z", so the rule is enforced here instead. It
-      # fails rather than skips: a tighter glob would let a malformed tag push
-      # do nothing at all, and silence reads as success.
-      # A bare vX.Y.Z or vX.Y.Z-beta.N is versioned by the bare v* describe.
+      # Only a vX.Y.Z or vX.Y.Z-beta.N tag builds a release, versioned by the bare
+      # v* describe. Anything else, such as a dispatch from a branch, fails
+      # rather than skips, because silence reads as success.
       - name: Resolve the version from the tag
         id: version
         shell: bash
@@ -77,17 +74,11 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
 
-          if [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
-            VERSION="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"
-          else
-            VERSION="${TAG#cli/}"
-            if [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
-              echo "::error::${TAG} carries version '${VERSION}', which is neither vX.Y.Z nor vX.Y.Z-rc.N."
-              echo "A release candidate needs the dot: v0.1.0-rc.0, not v0.1.0-rc0."
-              echo "Delete the tag, then push a corrected one."
-              exit 1
-            fi
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+            echo "::error::${TAG} is neither a vX.Y.Z nor a vX.Y.Z-beta.N tag."
+            exit 1
           fi
+          VERSION="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"
 
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Building nvkectl ${VERSION} for ${TAG}"
@@ -95,7 +86,7 @@ jobs:
       # go.work, not cli/go.mod, like every other workflow here. setup-go pins
       # GOTOOLCHAIN=local, so the toolchain must satisfy the workspace, which
       # asks for the highest of its members. go.work went to 1.26.6 while
-      # cli/go.mod stayed on 1.26.5, and build-cross failed on every cli/v* tag.
+      # cli/go.mod stayed on 1.26.5, and build-cross failed on every release tag.
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -156,7 +147,7 @@ jobs:
           category: 'clamav-release'
           output_file: 'clamav-release.sarif'
 
-  # The three cli channels. They used to trigger on the cli/v* tag themselves,
+  # The three cli channels. They used to trigger on a release tag themselves,
   # which meant four independent build-cross runs claiming to be one release,
   # and three publish paths that never waited for license-checks. Calling them
   # here fixes both: one build, and everything behind the gate.
@@ -194,63 +185,3 @@ jobs:
       security-events: write
     with:
       dist_artifact: ${{ needs.build-cli.outputs.dist_artifact }}
-
-  # Records which workflow publishes a component tag. Only cli/v* is published
-  # from this file; the rest go to registries, apt and S3 from their own.
-  publish:
-    name: Publish
-    needs: [license-checks]
-    if: ${{ contains(github.ref_name, '/') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      # Component publish lives in dedicated workflows so each component can
-      # own its runners, secrets and artifact shape. agent/v* .debs go through
-      # agent-deb-publish.yml (S3 apt intake, GHCR and NVCR); binaries
-      # through agent-artifact.yml / agent-artifact-nvcr.yml. os-image/v* qcow2
-      # through os-image-artifact.yml (Packer + boot-smoke, then GHCR). This job
-      # only records which path fired so a component tag never looks like a
-      # no-op release.
-      - name: Route component publish
-        run: |
-          set -euo pipefail
-          case "${GITHUB_REF_NAME}" in
-            agent/v*)
-              echo "Agent tag ${GITHUB_REF_NAME}:"
-              echo "  - .debs  → Agent Deb Publish (apt-intake S3, GHCR and NVCR)"
-              echo "  - binary → Agent Artifact / Agent Artifact NVCR"
-              ;;
-
-            os-image/v*)
-              echo "OS-image tag ${GITHUB_REF_NAME}:"
-              echo "  - qcow2  → OS Image Artifact (Packer + boot-smoke, then NVCR and S3; GHCR version tags only when NVKE_GITHUB_PUBLISH names os-image)"
-              echo "  - check  → nvke-os-image-check on S3"
-              ;;
-
-            nktp/v*)
-              echo "NKTP tag ${GITHUB_REF_NAME}:"
-              echo "  - chart → NKTP Chart Publish"
-              ;;
-
-            cluster-api-provider-provisioned/v*)
-              echo "Provisioned-provider tag ${GITHUB_REF_NAME}:"
-              echo "  - image → Image Provisioned NVCR (promote-ghcr → ghcr.io/dsx-ai-factory/nvke/cluster-api-provider-provisioned)"
-              ;;
-
-            cli/v*)
-              echo "CLI tag ${GITHUB_REF_NAME}:"
-              echo "  - binaries → CLI Artifact GHCR / CLI Artifact NVCR / CLI S3 Publish"
-              ;;
-
-            controller/v*)
-              echo "Controller tag ${GITHUB_REF_NAME}:"
-              echo "  - image → Image NVCR (nvcr.io source, promoted to ghcr.io/dsx-ai-factory/nvke/nvke-controller and DSX NVCR)"
-              echo "  - chart → Chart Publish / Chart Publish NVCR"
-              ;;
-
-            *)
-              echo "::warning::No component publish workflow for '${GITHUB_REF_NAME}' yet."
-              ;;
-          esac

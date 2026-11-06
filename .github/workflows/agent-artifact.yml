@@ -31,6 +31,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch: {}
 
 permissions: {}
@@ -117,22 +119,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The same value agent/Makefile derives, computed once here so the
-          # string stamped into the binary and the string in the registry tag
-          # cannot disagree. On an untagged commit this is v0.2.0-4-gdeadbee;
-          # with no agent/v* tag reachable at all, the short sha.
-          version="$(git describe --match 'agent/v*' --tags --always 2>/dev/null || git rev-parse --short HEAD)"
-          version="${version#agent/}"
+          # Computed once here so the string stamped into the binary and the
+          # string in the registry tag cannot disagree: v0.2.0 on a release,
+          # v0.2.0-4-gdeadbee between releases.
+          version="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"
 
-          # A tag ref carries a slash (agent/v0.3.0), which is not legal in a
-          # registry tag, so the component prefix is stripped here too. sha- and
-          # edge are the hand-off agent/Makefile reads; the version alias is
-          # the GitHub publication.
+          # sha- and edge are the hand-off agent/Makefile reads; the version
+          # alias is the GitHub publication of a release.
           aliases=("sha-${GITHUB_SHA}")
           if [[ "${GITHUB_REF}" == refs/heads/main ]]; then
             aliases+=("edge")
-          elif [[ "${GITHUB_REF}" == refs/tags/* && "${GITHUB_PUBLISH}" == "true" ]]; then
-            aliases+=("${GITHUB_REF_NAME#agent/}")
+          elif [[ "${GITHUB_REF}" == refs/tags/v* && "${GITHUB_PUBLISH}" == "true" ]]; then
+            aliases+=("${version}")
           fi
 
           {

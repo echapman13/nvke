@@ -32,16 +32,16 @@ name: CLI Artifact NVCR
 # No GHCR pair beyond the separate cli-artifact.yml is missing here on
 # purpose -- this file only concerns the NVCR destination.
 
-# Called by tag-publish.yml after its build, so a cli/v* tag produces one set of
+# Called by tag-publish.yml after its build, so a release tag produces one set of
 # binaries rather than four independent ones, and this runs behind the licence
 # gate tag-publish.yml already enforces. The tag trigger is gone for that reason.
 #
 # workflow_dispatch still works and still builds: dist_artifact is empty there,
 # so the build step below runs instead of the download.
 #
-# A bare vX.Y.Z-beta.N tag only triggers the run. The artifact is versioned and
-# tagged like any other build of that commit (the cli/v* describe version and
-# sha-<commit>); the beta tag name is not added as an alias.
+# The artifact is versioned by `git describe --tags --always --match 'v*'` and
+# tagged sha-<commit>, plus that version on a vX.Y.Z or vX.Y.Z-beta.N tag. A
+# beta is not published to DSX.
 on:
   workflow_call:
     inputs:
@@ -149,13 +149,10 @@ jobs:
           aliases=("sha-${GITHUB_SHA}")
           if [[ "${GITHUB_REF}" == refs/heads/main ]]; then
             aliases+=("edge")
-          elif [[ "${GITHUB_REF}" == refs/tags/* && "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
-            # A bare beta tag only triggers the run; it must not become an
-            # alias. The build is named by its describe version instead, the
-            # one the binary reports, so qualification can pull it by version.
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # The version the binary reports, so qualification can pull it by
+            # version.
             aliases+=("${version}")
-          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            aliases+=("${GITHUB_REF_NAME#cli/}")
           fi
 
           {

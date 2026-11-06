@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Builds the nvke-agent .debs on an agent/v* tag, uploads them to the
-# apt-publisher S3 intake, and publishes the same packages to GHCR as an OCI
-# artifact (ghcr.io/dsx-ai-factory/nvke/agent-deb) for oras pull. Apt intake is
-# tag-only: workflow_dispatch is kept so a failed tag publish can be re-run,
-# but branch dispatches never upload. deb.yml exercises the same packaging
+# Builds the nvke-agent .debs on a vX.Y.Z or vX.Y.Z-beta.N tag, uploads them to
+# the apt-publisher S3 intake, and publishes the same packages to NVCR and, for
+# a release, to GHCR as an OCI artifact (ghcr.io/dsx-ai-factory/nvke/agent-deb)
+# for oras pull. Apt intake is tag-only: workflow_dispatch on the tag re-runs a
+# failed publish, and a branch dispatch never uploads to it. deb.yml exercises the same packaging
 # path on every agent change and throws the packages away; this workflow is
 # the release side.
 #
@@ -31,11 +31,9 @@
 # cannot race with itself. The GHCR and NVCR jobs run in parallel with S3
 # publish and do not touch apt intake.
 #
-# A bare vX.Y.Z-beta.N tag only triggers the run. It builds the commit it names
-# and versions the packages like any other build of that commit, by the agent/v*
-# describe. They are published to releases/<describe>/ in the apt intake bucket
-# (index.json is not updated) and as <describe> tags on NVCR. A beta has no
-# GHCR copy.
+# Packages are versioned by `git describe --tags --always --match 'v*'`, which
+# on a tag is the tag itself. A vX.Y.Z-beta.N is published to releases/<version>/
+# in the apt intake bucket without updating index.json, and has no GHCR copy.
 
 name: Agent Deb Publish
 
@@ -44,24 +42,15 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
       - "v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+"
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: Agent tag or full commit SHA to build
-        type: string
-        required: true
+  workflow_dispatch: {}
 
 permissions: {}
-
-env:
-  # A beta tag only triggers the run; the source is the commit it names.
-  SOURCE_REF: ${{ inputs.ref || (startsWith(github.ref, 'refs/tags/v') && github.sha) || github.ref_name }}
 
 concurrency:
   # A literal name, NOT ${{ github.workflow }}. Inside a called workflow that
   # expression is the CALLER's name, so any workflow merge-gate.yml calls would
   # share a group with its siblings and cancel them.
-  group: Agent Deb Publish-${{ inputs.ref || github.ref_name }}
+  group: Agent Deb Publish-${{ github.ref_name }}
   # Never cancel a publish midway: a half-written index.json leaves apt-publisher
   # with a partial release.
   cancel-in-progress: false
@@ -71,12 +60,9 @@ jobs:
     cache-mode: read
     name: Build the ${{ matrix.arch }} package
     runs-on: ${{ matrix.runner }}
-    # Tag-only: a branch workflow_dispatch must not produce packages that the
-    # publish job (or a later re-enable) could upload into apt intake.
-    if: >-
-      github.repository_id == '1323115536' &&
-      (startsWith(inputs.ref || github.ref_name, 'agent/v') || inputs.ref != '' ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
+    # Every run builds. Only a v* tag uploads to apt intake, so a branch
+    # dispatch produces packages nothing publishes.
+    if: github.repository_id == '1323115536'
     outputs:
       sha: ${{ steps.package.outputs.sha }}
       version: ${{ steps.version.outputs.version }}
@@ -94,39 +80,22 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Validate source ref
-        run: |
-          if [[ ! "${SOURCE_REF}" =~ ^(agent/v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?|[0-9a-f]{40})$ ]]; then
-            echo "::error::ref must be an agent release tag or a full lowercase commit SHA"
-            exit 1
-          fi
-          if [[ "${SOURCE_REF}" == agent/v* && "${GITHUB_REF}" != "refs/tags/${SOURCE_REF}" ]]; then
-            echo "::error::Release builds must run from their source tag; select it with --ref"
-            exit 1
-          fi
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref || github.sha }}
-          # DEB_VERSION comes from `git describe --match 'agent/v*'`; a shallow
-          # clone would stamp the wrong version into a release package.
+          # The version is a git describe; a shallow clone would stamp the
+          # wrong version into a release package.
           fetch-depth: 0
           persist-credentials: false
 
-      # The one place the version is resolved, for the consumers below. A release
-      # tag names it. Anything else is described, the way `make deb` stamps the
-      # package: a beta run arrives here with only its commit (see SOURCE_REF).
+      # The one place the version is resolved, for the build and the consumers
+      # below.
       - name: Resolve the version
         id: version
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${SOURCE_REF}" == agent/v* ]]; then
-            version="${SOURCE_REF#agent/}"
-          else
-            version="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"
-          fi
+          version="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up Go
@@ -224,10 +193,7 @@ jobs:
   publish:
     name: Upload to apt intake
     needs: [build]
-    if: >-
-      github.repository_id == '1323115536' &&
-      (startsWith(inputs.ref || github.ref_name, 'agent/v') ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
+    if: github.repository_id == '1323115536' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: apt-intake
@@ -299,7 +265,7 @@ jobs:
           APT_INTAKE_RELEASE: ${{ steps.meta.outputs.release }}
           # A beta is uploaded under releases/<describe>/ but never enters the index
           # that apt-publisher serves.
-          PUBLISH_INDEX_JSON: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-beta.')) && 'false' || 'true' }}
+          PUBLISH_INDEX_JSON: ${{ contains(github.ref_name, '-beta.') && 'false' || 'true' }}
           ASSETS_DIR: bin
         run: ./scripts/upload-s3-apt-intake.sh
 
@@ -308,8 +274,7 @@ jobs:
     needs: [build]
     if: >-
       github.repository_id == '1323115536' &&
-      github.ref == 'refs/heads/main' &&
-      !startsWith(inputs.ref || github.ref_name, 'agent/v')
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -364,7 +329,7 @@ jobs:
     needs: [build]
     if: >-
       github.repository_id == '1323115536' &&
-      startsWith(inputs.ref || github.ref_name, 'agent/v') &&
+      startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-beta.') &&
       contains(format(',{0},', vars.NVKE_GITHUB_PUBLISH || 'root,controller,cli,agent,cluster-api-provider-provisioned,nktp'), ',agent,')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -420,10 +385,10 @@ jobs:
       # `oras manifest index create` cannot tell the two packages apart.
       - name: Push per-architecture packages
         env:
-          VERSION: ${{ env.SOURCE_REF }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          version="${VERSION#agent/}"
+          version="${VERSION}"
           shopt -s nullglob
           debs=(agent/bin/*.deb)
           if [ ${#debs[@]} -ne 2 ]; then
@@ -456,10 +421,10 @@ jobs:
 
       - name: Show published index
         env:
-          VERSION: ${{ env.SOURCE_REF }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          version="${VERSION#agent/}"
+          version="${VERSION}"
           oras manifest fetch --pretty "${REPO}:${version}"
 
   # Mirrors publish-ghcr for NVCR -- same packages, same tags, same index
@@ -467,10 +432,7 @@ jobs:
   publish-nvcr:
     name: Publish debs to NVCR
     needs: [build]
-    if: >-
-      github.repository_id == '1323115536' &&
-      (startsWith(inputs.ref || github.ref_name, 'agent/v') ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
+    if: github.repository_id == '1323115536' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     env:
       SOURCE_SHA: ${{ needs.build.outputs.sha }}
@@ -533,7 +495,7 @@ jobs:
           REPO: ${{ steps.meta.outputs.repo }}
         run: |
           set -euo pipefail
-          version="${VERSION#agent/}"
+          version="${VERSION}"
           shopt -s nullglob
           debs=(agent/bin/*.deb)
           if [ ${#debs[@]} -ne 2 ]; then
@@ -569,5 +531,5 @@ jobs:
           REPO: ${{ steps.meta.outputs.repo }}
         run: |
           set -euo pipefail
-          version="${VERSION#agent/}"
+          version="${VERSION}"
           oras manifest fetch --pretty "${REPO}:${version}"

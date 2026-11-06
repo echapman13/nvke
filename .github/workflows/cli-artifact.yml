@@ -12,7 +12,7 @@ name: CLI Artifact GHCR
 # use in this repo is linux-only, so this is the first time that flag sees a
 # `darwin/*` value. Watch the first real run.
 
-# Called by tag-publish.yml after its build, so a cli/v* tag produces one set of
+# Called by tag-publish.yml after its build, so a release tag produces one set of
 # binaries rather than four independent ones, and this runs behind the licence
 # gate tag-publish.yml already enforces. The tag trigger is gone for that reason.
 #
@@ -89,8 +89,8 @@ jobs:
           aliases=("sha-${GITHUB_SHA}")
           if [[ "${GITHUB_REF}" == refs/heads/main ]]; then
             aliases+=("edge")
-          elif [[ "${GITHUB_REF}" == refs/tags/* && "${GITHUB_PUBLISH}" == "true" ]]; then
-            aliases+=("${GITHUB_REF_NAME#cli/}")
+          elif [[ "${GITHUB_REF}" == refs/tags/v* && "${GITHUB_PUBLISH}" == "true" ]]; then
+            aliases+=("${version}")
           fi
 
           {

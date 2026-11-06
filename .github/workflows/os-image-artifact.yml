@@ -5,8 +5,8 @@ name: OS Image Artifact
 
 # Builds and validates the FDE and non-FDE Packer node images for amd64 and
 # arm64, in both published Ubuntu flavors (26.04 and 24.04 -- see
-# UBUNTU_RELEASE in os-image/packer/Makefile for why both ship), on an
-# os-image/v* tag, a manual dispatch, a main push that touches os-image/ or
+# UBUNTU_RELEASE in os-image/packer/Makefile for why both ship), on a
+# vX.Y.Z or vX.Y.Z-beta.N tag, a manual dispatch, a main push that touches os-image/ or
 # the 12-hourly schedule, pushes all eight qcow2s to GHCR as OCI artifacts
 # under sha-<commit> tags, or main-sha-<commit> when the run is on main (main
 # pushes and the schedule stop there; NVCR and S3 stay tag/dispatch only and
@@ -50,12 +50,10 @@ name: OS Image Artifact
 # Both arches run on the ARC KVM scale sets (arc-amd64-kvm, arc-arm64-kvm).
 # Each matrix job builds one variant, so FDE and non-FDE bake in parallel.
 #
-# A bare vX.Y.Z-beta.N tag only triggers the run. It bakes that commit's
-# non-FDE images only -- Ubuntu 26.04 and 24.04, amd64 and arm64 -- and versions
-# it by the os-image/v* describe, like any other build of it: GHCR gets
-# sha-<commit> (and the describe version when NVKE_GITHUB_PUBLISH names
-# os-image), NVCR and the prod S3 path get the describe version. The beta tag
-# name is not published.
+# Every build is versioned by `git describe --tags --always --match 'v*'`: GHCR
+# gets sha-<commit> (and the version on a tag when NVKE_GITHUB_PUBLISH names
+# os-image), NVCR and the prod S3 path get the version. A vX.Y.Z-beta.N bakes
+# that commit's non-FDE images only -- Ubuntu 26.04 and 24.04, amd64 and arm64.
 #
 # Distinct from image.yml, which compiles controller Dockerfiles and pushes
 # nothing. Distinct from image-nvcr.yml, which publishes the controller
@@ -165,18 +163,13 @@ jobs:
           persist-credentials: false
 
       # The one place the version is resolved. The bake, and the NVCR copy and S3
-      # publish of a tagged build, all take it, so they cannot disagree. A beta
-      # tag matches no os-image/v* tag, so it resolves by describe like a branch.
+      # publish of a tagged build, all take it, so they cannot disagree.
       - name: Resolve the version
         id: version
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF}" == refs/tags/os-image/* ]]; then
-            version="${GITHUB_REF_NAME#os-image/}"
-          else
-            version="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"
-          fi
+          version="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
       # A scheduled run, or a re-run of a main push, on a commit whose
@@ -847,8 +840,7 @@ jobs:
       - name: Push the qcow2 to GHCR
         if: >-
           github.event.inputs.dry_run != 'true' &&
-          (startsWith(github.ref, 'refs/tags/os-image/') ||
-           startsWith(github.ref, 'refs/tags/v') ||
+          (startsWith(github.ref, 'refs/tags/v') ||
            github.event_name == 'workflow_dispatch' ||
            github.event_name == 'schedule' ||
            (github.event_name == 'push' && github.ref == 'refs/heads/main'))
@@ -880,8 +872,7 @@ jobs:
       - name: Show published manifest
         if: >-
           github.event.inputs.dry_run != 'true' &&
-          (startsWith(github.ref, 'refs/tags/os-image/') ||
-           startsWith(github.ref, 'refs/tags/v') ||
+          (startsWith(github.ref, 'refs/tags/v') ||
            github.event_name == 'workflow_dispatch' ||
            github.event_name == 'schedule' ||
            (github.event_name == 'push' && github.ref == 'refs/heads/main'))
@@ -928,8 +919,7 @@ jobs:
     if: >-
       github.repository_id == '1323115536' &&
       github.event.inputs.dry_run != 'true' &&
-      (startsWith(github.ref, 'refs/tags/os-image/') ||
-       startsWith(github.ref, 'refs/tags/v') ||
+      (startsWith(github.ref, 'refs/tags/v') ||
        github.event_name == 'workflow_dispatch')
     name: Publish to NVCR (${{ matrix.arch }}, ubuntu ${{ matrix.ubuntu_release }}, ${{ matrix.variant }})
     runs-on: ubuntu-latest
@@ -1014,15 +1004,14 @@ jobs:
     if: >-
       github.repository_id == '1323115536' &&
       github.event.inputs.dry_run != 'true' &&
-      (startsWith(github.ref, 'refs/tags/os-image/') ||
-       startsWith(github.ref, 'refs/tags/v') ||
+      (startsWith(github.ref, 'refs/tags/v') ||
        github.event_name == 'workflow_dispatch')
     name: Publish to S3 (${{ matrix.arch }}, ubuntu ${{ matrix.ubuntu_release }}, ${{ matrix.variant }})
     runs-on: ubuntu-latest
-    # Pushed os-image/v* and beta tags both publish to prod, where qualification
-    # reads a beta from, so s3-publish's deployment policy must admit both. A
-    # manual run stays on non-prod whatever ref it names.
-    environment: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/os-image/') || startsWith(github.ref, 'refs/tags/v')) && 's3-publish' || 's3-publish-non-prod' }}
+    # Pushed vX.Y.Z and beta tags publish to prod, where qualification reads a
+    # beta from, so s3-publish's deployment policy must admit both. A manual run
+    # stays on non-prod whatever ref it names.
+    environment: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && 's3-publish' || 's3-publish-non-prod' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false

@@ -27,9 +27,9 @@ name: Chart Publish NVCR
 # nvcr.io/<org>/charts/nvke-controller asks NGC for a team named `charts` that
 # does not exist, and the push dies before it reaches the registry:
 
-# A bare vX.Y.Z-beta.N tag only triggers the run. The chart is versioned like any
-# other build of that commit: the controller/v* describe version, with the same
-# appVersion as the image tag image-nvcr.yml publishes.
+# The chart is versioned by `git describe --tags --always --match 'v*'`, with
+# the same appVersion as the image tag image-nvcr.yml publishes. A
+# vX.Y.Z-beta.N is not published to DSX.
 
 # Through controller/v0.1.1-rc.1 the chart was named cloud-workflow-engine and
 # published at nvcr.io/<NVKE_NGC_ORG>/cloud-workflow-engine; through the last

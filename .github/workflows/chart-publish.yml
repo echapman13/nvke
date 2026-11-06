@@ -22,7 +22,7 @@ name: Chart Publish
 # agent binaries. Without that split a chart and an image end up in one OCI
 # repository, told apart only by whether the tag carries a "v".
 #
-# Chart version: git describe output with the "controller/" prefix and leading
+# Chart version: `git describe --tags --always --match 'v*'` with the leading
 # "v" stripped (OCI chart tags carry no "v" prefix by convention).
 # AppVersion: the same string with the leading "v" kept, which the deployment
 # template uses as the default image tag.
@@ -110,11 +110,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Strip "controller/" prefix; keep "v" for appVersion, drop it for
-          # the chart version (OCI chart tags are plain semver without v).
-          describe="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"
-          describe="${describe#controller/}"   # → v0.1.0 or v0.1.0-4-gabcdef
-          version="${describe#v}"              # → 0.1.0 or 0.1.0-4-gabcdef
+          # Keep "v" for appVersion, drop it for the chart version (OCI chart
+          # tags are plain semver without v).
+          describe="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"   # → v0.1.0
+          version="${describe#v}"                                                   # → 0.1.0
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "app_version=${describe}" >> "${GITHUB_OUTPUT}"
           echo "Chart version: ${version}  appVersion: ${describe}"

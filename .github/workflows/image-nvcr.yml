@@ -24,9 +24,9 @@ name: Image NVCR
 # to be passed explicitly and have no default, so this workflow can only ever
 # push to the destination resolved here.
 #
-# A bare vX.Y.Z-beta.N tag only triggers the build. It publishes like any other
-# build of that commit: sha-<commit> and the controller/v* describe version. The
-# beta tag name is not published, and a beta is not promoted to GHCR or DSX.
+# Every build publishes sha-<commit> and its version, from
+# `git describe --tags --always --match 'v*'`. A vX.Y.Z release is promoted to
+# GHCR and DSX under that version; a vX.Y.Z-beta.N is promoted to neither.
 #
 # A workflow_dispatch from a non-main branch publishes only `sha-*` tags — a
 # safe smoke-test mode that never moves `edge`.
@@ -182,6 +182,7 @@ jobs:
     outputs:
       image: ${{ steps.meta.outputs.image }}
       index_digest: ${{ steps.create.outputs.index_digest }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -320,7 +321,7 @@ jobs:
     # NVKE_GITHUB_PUBLISH names the components whose releases go to GHCR;
     # see docs/artifact-publication.md. Unset means every component but os-image.
     if: >-
-      startsWith(github.ref, 'refs/tags/controller/v') &&
+      startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-beta.') &&
       contains(format(',{0},', vars.NVKE_GITHUB_PUBLISH || 'root,controller,cli,agent,cluster-api-provider-provisioned,nktp'), ',controller,')
     runs-on: linux-amd64-cpu8
     needs: [manifest]
@@ -384,6 +385,7 @@ jobs:
         env:
           NVKE_NGC_ORG: ${{ vars.NVKE_NGC_ORG }}
           INDEX_DIGEST: ${{ needs.manifest.outputs.index_digest }}
+          VERSION: ${{ needs.manifest.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -397,7 +399,7 @@ jobs:
             exit 1
           fi
 
-          version="${GITHUB_REF_NAME#controller/}"
+          version="${VERSION}"
           # By digest, so this copies the index the manifest job just created
           # rather than whatever the version tag resolves to now.
           digest="${INDEX_DIGEST}"
@@ -529,6 +531,7 @@ jobs:
           NKE_NGC_TOKEN: ${{ secrets.NGC_REGISTRY_TOKEN_NVKE }}
           DSX_NGC_TOKEN: ${{ secrets.NGC_REGISTRY_TOKEN_DSX }}
           INDEX_DIGEST: ${{ needs.manifest.outputs.index_digest }}
+          IMAGE_VERSION: ${{ needs.manifest.outputs.version }}
         run: |
           set -euo pipefail
 
@@ -554,7 +557,7 @@ jobs:
             exit 1
           fi
 
-          image_version="$(git describe --tags --always --match 'v*' "${GITHUB_SHA}")"
+          image_version="${IMAGE_VERSION}"
           # By digest, so this promotes the index the manifest job just created
           # rather than whatever the version tag resolves to now.
           source_digest="${INDEX_DIGEST}"
